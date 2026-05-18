@@ -317,6 +317,8 @@
     .sent-token:hover { background: rgba(255,255,255,0.06); }
     .sent-token.active { background: var(--red-dim); border-bottom-color: var(--red); }
     .sent-token ruby rt { font-size: 0.42em; color: var(--red); text-align: center; }
+    .wc-jp ruby rt { font-size: 0.4em; color: var(--red); text-align: center; }
+    .fc-jp ruby rt { font-size: 0.38em; color: var(--red); text-align: center; }
 
     /* ── Focused word card ──────────────────────────────────── */
     #focusedCard {
@@ -743,19 +745,39 @@ function looksLikeReading(s) {
   return /^[぀-ゟ゠-ヿ\s・ー]+$/.test((s || '').trim());
 }
 
+const KANJI_RE = new RegExp('[' +
+  String.fromCodePoint(0x4e00) + '-' + String.fromCodePoint(0x9fff) +
+  String.fromCodePoint(0x3400) + '-' + String.fromCodePoint(0x4dbf) + ']');
+
+// Strip matching kana suffix so ruby only covers the kanji part.
+// e.g. surface=始めて reading=はじめて → "始(はじ)めて"
+function alignFurigana(surface, reading) {
+  if (!reading || reading === surface || !KANJI_RE.test(surface)) return null;
+  let si = surface.length - 1, ri = reading.length - 1;
+  while (si > 0 && ri > 0 && surface[si] === reading[ri] && /[ぁ-んァ-ン]/.test(surface[si])) {
+    si--; ri--;
+  }
+  const kanjiPart  = surface.slice(0, si + 1);
+  const kanaSuffix = surface.slice(si + 1);
+  const kanjiRead  = reading.slice(0, ri + 1);
+  if (!kanjiPart || !kanjiRead || kanjiRead === kanjiPart) return null;
+  return kanjiPart + '(' + kanjiRead + ')' + kanaSuffix;
+}
+
+// Returns ruby HTML for a surface/reading pair. Prefers per-kanji furigana annotation,
+// falls back to kana-suffix stripping, then whole-word ruby as last resort.
+function buildRubyHTML(surface, reading, furigana) {
+  if (!KANJI_RE.test(surface)) return null;
+  const furi = furigana || alignFurigana(surface, reading);
+  if (furi) return furiganaToRuby(furi);
+  if (reading && reading !== surface) return '<ruby>' + surface + '<rt>' + reading + '</rt></ruby>';
+  return null;
+}
+
 // Build ruby HTML from the tokens array — more reliable than parsing the AI's furigana string
 function buildRubyFromTokens(tokens) {
-  const kanjiRe = new RegExp('[' +
-    String.fromCodePoint(0x4e00) + '-' + String.fromCodePoint(0x9fff) +
-    String.fromCodePoint(0x3400) + '-' + String.fromCodePoint(0x4dbf) + ']');
   return (tokens || []).map(t => {
-    const s = t.surface || '';
-    const r = t.reading || '';
-    if (kanjiRe.test(s)) {
-      if (t.furigana) return furiganaToRuby(t.furigana);
-      if (r && r !== s) return '<ruby>' + s + '<rt>' + r + '</rt></ruby>';
-    }
-    return s;
+    return buildRubyHTML(t.surface || '', t.reading || '', t.furigana) || (t.surface || '');
   }).join('');
 }
 
@@ -868,7 +890,15 @@ function makeWordCard(token) {
   const jp = document.createElement('div');
   jp.className = 'wc-jp';
   const jpWord = document.createElement('div');
-  jpWord.textContent = token.surface;
+  const reading = token.reading;
+  const romaji  = token.romaji || toRomaji(reading);
+  const wcRubyHtml = reading ? buildRubyHTML(token.surface, reading, token.furigana) : null;
+  if (wcRubyHtml) {
+    jpWord.innerHTML = wcRubyHtml;
+    jpWord.style.lineHeight = '2.4';
+  } else {
+    jpWord.textContent = token.surface;
+  }
   jp.appendChild(jpWord);
   const speakWordBtn = document.createElement('button');
   speakWordBtn.className = 'speak-btn';
@@ -881,14 +911,12 @@ function makeWordCard(token) {
   const right = document.createElement('div');
   right.className = 'wc-right';
 
-  // Row 1: furigana · romaji · JLPT badge
+  // Row 1: romaji · JLPT badge (kana reading omitted when ruby is shown inline above)
   const row1 = document.createElement('div');
   row1.className = 'wc-row1';
 
-  const reading = token.reading;
-  const romaji  = token.romaji || toRomaji(reading);
-
-  if (reading && reading !== token.surface) {
+  // Only show plain kana reading when the word has no kanji (ruby already shows it otherwise)
+  if (reading && reading !== token.surface && !KANJI_RE.test(token.surface)) {
     const f = document.createElement('span'); f.className='wc-furi'; f.textContent=reading; row1.appendChild(f);
     const sep = document.createElement('span'); sep.className='wc-sep'; sep.textContent='·'; row1.appendChild(sep);
   }
@@ -959,28 +987,18 @@ function renderInteractiveSentence(tokens) {
   container.innerHTML = '';
   _activeSpan = null;
 
-  const kanjiRe = new RegExp('[' + String.fromCodePoint(0x4e00) + '-' + String.fromCodePoint(0x9fff) + ']');
-
   (tokens || []).forEach(token => {
     const span = document.createElement('span');
     span.className = 'sent-token';
 
     const surface = token.surface || '';
     const reading = (token.reading && token.reading !== surface) ? token.reading : '';
+    const rubyHtml = reading ? buildRubyHTML(surface, reading, token.furigana) : null;
 
-    if (reading && kanjiRe.test(surface)) {
-      if (token.furigana) {
-        const tmp = document.createElement('span');
-        tmp.innerHTML = furiganaToRuby(token.furigana);
-        while (tmp.firstChild) span.appendChild(tmp.firstChild);
-      } else {
-        const ruby = document.createElement('ruby');
-        ruby.appendChild(document.createTextNode(surface));
-        const rt = document.createElement('rt');
-        rt.textContent = reading;
-        ruby.appendChild(rt);
-        span.appendChild(ruby);
-      }
+    if (rubyHtml) {
+      const tmp = document.createElement('span');
+      tmp.innerHTML = rubyHtml;
+      while (tmp.firstChild) span.appendChild(tmp.firstChild);
     } else {
       span.textContent = surface;
     }
@@ -1009,17 +1027,24 @@ function selectToken(token, spanEl) {
   const left  = document.createElement('div'); left.className  = 'fc-left';
   const right = document.createElement('div'); right.className = 'fc-right';
 
-  // Left: large word + speak button
-  const jpEl = document.createElement('div'); jpEl.className = 'fc-jp'; jpEl.textContent = surface;
+  // Left: large word with ruby + speak button
+  const jpEl = document.createElement('div'); jpEl.className = 'fc-jp';
+  const fcRubyHtml = reading ? buildRubyHTML(surface, reading, token.furigana) : null;
+  if (fcRubyHtml) {
+    jpEl.innerHTML = fcRubyHtml;
+    jpEl.style.lineHeight = '2.4';
+  } else {
+    jpEl.textContent = surface;
+  }
   const spkBtn = document.createElement('button');
   spkBtn.className = 'speak-btn'; spkBtn.textContent = '🔊';
   spkBtn.addEventListener('click', e => { e.stopPropagation(); speakText(surface); });
   left.appendChild(jpEl);
   left.appendChild(spkBtn);
 
-  // Right: reading · romaji · JLPT
+  // Right: reading (only for non-kanji words) · romaji · JLPT
   const row1 = document.createElement('div'); row1.className = 'fc-row1';
-  if (reading) {
+  if (reading && !KANJI_RE.test(surface)) {
     const f = document.createElement('span'); f.className='fc-furi'; f.textContent=reading; row1.appendChild(f);
     const sep = document.createElement('span'); sep.className='wc-sep'; sep.textContent='·'; row1.appendChild(sep);
   }
