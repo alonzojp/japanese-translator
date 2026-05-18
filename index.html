@@ -587,6 +587,7 @@ JSON structure:
     {
       "surface": "word as it appears",
       "reading": "hiragana reading as actually pronounced in this sentence (context-sensitive: e.g. 日 → ひ not にち when read as 'hi' in context)",
+      "furigana": "per-kanji bracket notation — wrap only kanji with their reading, leave kana as-is. Examples: 友達 → 友(とも)達(だち), 食べる → 食(た)べる, 東京 → 東(とう)京(きょう), 日本語 → 日(に)本(ほん)語(ご). If the surface has no kanji, use the plain hiragana reading.",
       "romaji": "Hepburn romaji matching the contextual reading",
       "part_of_speech": "noun | verb | particle | adjective | adverb | conjunction | proper noun | auxiliary verb | na-adjective | i-adjective | verb phrase | interjection",
       "dictionary_form": "base/dictionary form",
@@ -750,8 +751,9 @@ function buildRubyFromTokens(tokens) {
   return (tokens || []).map(t => {
     const s = t.surface || '';
     const r = t.reading || '';
-    if (kanjiRe.test(s) && r && r !== s) {
-      return '<ruby>' + s + '<rt>' + r + '</rt></ruby>';
+    if (kanjiRe.test(s)) {
+      if (t.furigana) return furiganaToRuby(t.furigana);
+      if (r && r !== s) return '<ruby>' + s + '<rt>' + r + '</rt></ruby>';
     }
     return s;
   }).join('');
@@ -967,12 +969,18 @@ function renderInteractiveSentence(tokens) {
     const reading = (token.reading && token.reading !== surface) ? token.reading : '';
 
     if (reading && kanjiRe.test(surface)) {
-      const ruby = document.createElement('ruby');
-      ruby.appendChild(document.createTextNode(surface));
-      const rt = document.createElement('rt');
-      rt.textContent = reading;
-      ruby.appendChild(rt);
-      span.appendChild(ruby);
+      if (token.furigana) {
+        const tmp = document.createElement('span');
+        tmp.innerHTML = furiganaToRuby(token.furigana);
+        while (tmp.firstChild) span.appendChild(tmp.firstChild);
+      } else {
+        const ruby = document.createElement('ruby');
+        ruby.appendChild(document.createTextNode(surface));
+        const rt = document.createElement('rt');
+        rt.textContent = reading;
+        ruby.appendChild(rt);
+        span.appendChild(ruby);
+      }
     } else {
       span.textContent = surface;
     }
