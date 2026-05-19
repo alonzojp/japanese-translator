@@ -416,6 +416,52 @@
     footer { margin-top: 32px; color: #333; font-size: 0.75rem; text-align: center; }
     footer a { color: #555; text-decoration: none; }
     footer a:hover { color: #888; }
+
+    /* ── Lyric fetcher ───────────────────────────────────── */
+    .fetch-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    #fetchInput {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border2);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.88rem;
+      padding: 9px 12px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    #fetchInput:focus { border-color: var(--red); }
+    #fetchInput::placeholder { color: #2e2e3e; }
+    #fetchBtn {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border2);
+      border-radius: 8px;
+      padding: 9px 14px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    #fetchBtn:hover:not(:disabled) { color: var(--text); border-color: #555; }
+    #fetchBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #fetchStatus {
+      font-size: 0.78rem;
+      color: var(--muted);
+      min-height: 1.1em;
+      margin-bottom: 14px;
+    }
+    #fetchStatus.ok   { color: #5cb85c; }
+    #fetchStatus.fail { color: var(--red); }
+    .panel-divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 16px 0;
+    }
   </style>
 </head>
 <body>
@@ -450,6 +496,13 @@
 
 <!-- Input panel -->
 <div class="panel">
+  <div class="lbl">Fetch lyrics</div>
+  <div class="fetch-row">
+    <input type="text" id="fetchInput" placeholder="YouTube/Spotify URL  or  Artist – Song title" />
+    <button id="fetchBtn" onclick="doFetch()">Fetch</button>
+  </div>
+  <div id="fetchStatus"></div>
+  <hr class="panel-divider" />
   <div class="lbl">Japanese input</div>
   <textarea id="input" placeholder="日本語のテキストをここに貼り付けてください…" spellcheck="false"></textarea>
   <div class="controls">
@@ -1251,6 +1304,106 @@ function copyNatural() {
     setTimeout(() => { copyBtn.textContent = 'Copy'; copyBtn.classList.remove('copied'); }, 2000);
   });
 }
+
+// ── Lyric fetcher ─────────────────────────────────────────────────────────────
+
+function setFetchStatus(msg, cls = '') {
+  const el = document.getElementById('fetchStatus');
+  el.textContent = msg;
+  el.className = cls;
+}
+
+async function fetchYouTubeTitle(videoId) {
+  const res = await fetch(
+    `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+    { signal: AbortSignal.timeout(6000) }
+  );
+  if (!res.ok) throw new Error('Could not retrieve YouTube video info');
+  const data = await res.json();
+  return data.title || '';
+}
+
+async function fetchSpotifyTitle(spotifyUrl) {
+  const res = await fetch(
+    `https://open.spotify.com/oembed?url=${encodeURIComponent(spotifyUrl)}`,
+    { signal: AbortSignal.timeout(6000) }
+  );
+  if (!res.ok) throw new Error('Could not retrieve Spotify track info');
+  const data = await res.json();
+  return data.title || '';
+}
+
+function cleanVideoTitle(title) {
+  return title
+    .replace(/\(Official\s*(Music\s*)?(Video|Audio|MV|Lyric\s*Video|Visualizer)\)/gi, '')
+    .replace(/\[Official\s*(Music\s*)?(Video|Audio|MV|Lyric\s*Video|Visualizer)\]/gi, '')
+    .replace(/【[^】]{0,30}】/g, '')
+    .replace(/\[([^\]]{0,30})\]/g, '')
+    .replace(/\bM\.?V\.?\b/g, '')
+    .replace(/\bOfficial\b/gi, '')
+    .replace(/\bfeat\..*/gi, '')
+    .replace(/[-–—]\s*(Official|Music|Video|MV|Lyric|Audio|Visualizer)\b.*/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function searchLrcLib(query) {
+  const res = await fetch(
+    `https://lrclib.net/api/search?q=${encodeURIComponent(query)}`,
+    { signal: AbortSignal.timeout(8000) }
+  );
+  if (!res.ok) throw new Error('Lyrics search failed');
+  const results = await res.json();
+  if (!Array.isArray(results) || results.length === 0) return null;
+  const jpResult = results.find(r => /[぀-鿿一-鿿]/.test(r.plainLyrics || ''))
+                || results[0];
+  return (jpResult?.plainLyrics) ? jpResult : null;
+}
+
+async function doFetch() {
+  const query = document.getElementById('fetchInput').value.trim();
+  if (!query) return;
+
+  const fetchBtn = document.getElementById('fetchBtn');
+  fetchBtn.disabled = true;
+  setFetchStatus('Fetching…');
+
+  try {
+    let searchQuery = query;
+
+    const ytMatch = query.match(/(?:youtube\.com\/(?:watch\?(?:[^&]*&)*v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+    if (ytMatch) {
+      setFetchStatus('Getting video title from YouTube…');
+      const title = await fetchYouTubeTitle(ytMatch[1]);
+      searchQuery = cleanVideoTitle(title);
+    }
+
+    const spMatch = !ytMatch && query.match(/open\.spotify\.com\/track\/([a-zA-Z0-9]+)/);
+    if (spMatch) {
+      setFetchStatus('Getting track info from Spotify…');
+      const title = await fetchSpotifyTitle(query);
+      searchQuery = title;
+    }
+
+    setFetchStatus(`Searching lyrics for "${searchQuery}"…`);
+
+    const result = await searchLrcLib(searchQuery);
+    if (!result) throw new Error(`No lyrics found — try a more specific search like "Artist – Song title"`);
+
+    const songInfo = [result.artistName, result.trackName].filter(Boolean).join(' – ');
+    setFetchStatus(`Found: ${songInfo}`, 'ok');
+    document.getElementById('input').value = result.plainLyrics;
+
+  } catch (err) {
+    setFetchStatus('⚠ ' + err.message, 'fail');
+  } finally {
+    fetchBtn.disabled = false;
+  }
+}
+
+document.getElementById('fetchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doFetch();
+});
 </script>
 
 </body>
